@@ -1,0 +1,365 @@
+-- ============================================================
+-- BeeBox 202.5 - Document Trace & Track Schema
+-- Version: 2.5
+-- Features: 
+--   - Email whitelist, Magic links (from 202)
+--   - Parent/Child document relationships (NEW)
+--   - Physical location tracking with NFC (NEW)
+--   - Movement history / audit trail (NEW)
+-- ============================================================
+
+-- ============================================================
+-- PART 1: CORE DOCUMENTS (Enhanced from 202)
+-- ============================================================
+
+-- Documents table (metadata from DMS)
+CREATE TABLE IF NOT EXISTS documents (
+    id TEXT PRIMARY KEY,                    -- MEMO-KKFR2-XS43K
+    pillar_code TEXT NOT NULL,              -- MEMO
+    pillar_name TEXT,                       -- Memorandum
+    anchor TEXT NOT NULL,                   -- KKFR2
+    seal TEXT NOT NULL,                     -- XS43K
+    title TEXT,                             -- Memorandum 2021-12-15
+    creator TEXT,                           -- eagle001
+    audience TEXT,                          -- pb9801
+    origin TEXT,                            -- wechat
+    origin_display TEXT,                    -- WeChat
+    date_received TEXT,                     -- 2026-01-08
+    mime_type TEXT,                         -- image/jpeg
+    original_filename TEXT,                 -- Screenshot_xxx.jpg
+    extracted_text TEXT,                    -- OCR text preview
+    extraction_method TEXT,                 -- OCR-Tesseract
+    classification_method TEXT,             -- LLM-Cloudflare
+    confidence REAL,                        -- 0.8
+    file_path TEXT,                         -- Path to actual file
+    
+    -- Access control
+    access_level TEXT DEFAULT 'private',    -- public, protected, private
+    owner_email TEXT,                       -- Owner's email
+    
+    -- NEW: Parent/Child relationship
+    parent_id TEXT,                         -- Parent document ID (null if root)
+    relationship_type TEXT,                 -- amendment, attachment, response, invoice, receipt, version
+    
+    -- NEW: Current physical location
+    current_location_id TEXT,               -- FK to locations table
+    
+    -- Timestamps
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    
+    FOREIGN KEY (parent_id) REFERENCES documents(id),
+    FOREIGN KEY (current_location_id) REFERENCES locations(id)
+);
+
+-- ============================================================
+-- PART 2: DOCUMENT RELATIONSHIPS (NEW)
+-- ============================================================
+
+-- For complex many-to-many relationships
+CREATE TABLE IF NOT EXISTS document_relationships (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    parent_id TEXT NOT NULL,                -- Parent document ID
+    child_id TEXT NOT NULL,                 -- Child document ID
+    relationship_type TEXT NOT NULL,        -- Type of relationship
+    relationship_note TEXT,                 -- Optional description
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    created_by TEXT,                        -- Who linked them
+    
+    FOREIGN KEY (parent_id) REFERENCES documents(id),
+    FOREIGN KEY (child_id) REFERENCES documents(id),
+    UNIQUE(parent_id, child_id)
+);
+
+-- Relationship types reference
+-- amendment    : Contract → Amendment
+-- attachment   : Email → Attachment
+-- response     : Letter → Reply Letter
+-- invoice      : PO/Contract → Invoice
+-- receipt      : Invoice → Payment Receipt
+-- version      : Document v1 → Document v2
+-- reference    : Document mentions another
+-- supersedes   : New version replaces old
+
+-- ============================================================
+-- PART 3: PHYSICAL LOCATIONS (NEW)
+-- ============================================================
+
+-- Location hierarchy (Site → Room → Cabinet → Binder)
+CREATE TABLE IF NOT EXISTS locations (
+    id TEXT PRIMARY KEY,                    -- LOC-SITE-HQ001, LOC-ROOM-R302
+    location_type TEXT NOT NULL,            -- site, room, cabinet, binder, desk, box
+    name TEXT NOT NULL,                     -- "Office HQ", "Room 302", "Cabinet A"
+    description TEXT,                       -- Optional details
+    
+    -- Hierarchy
+    parent_location_id TEXT,                -- Parent location (null if top-level)
+    level INTEGER DEFAULT 1,                -- 1=site, 2=room, 3=cabinet, 4=binder
+    full_path TEXT,                         -- "Office HQ / Room 302 / Cabinet A"
+    
+    -- NFC Tag
+    nfc_tag_uid TEXT UNIQUE,                -- Physical NFC tag UID
+    nfc_tag_url TEXT,                       -- Digital Link URL for this location
+    
+    -- Capacity tracking (optional)
+    capacity INTEGER,                       -- Max documents it can hold
+    current_count INTEGER DEFAULT 0,        -- Current document count
+    
+    -- Status
+    is_active INTEGER DEFAULT 1,            -- 1=active, 0=archived
+    
+    -- Timestamps
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    
+    FOREIGN KEY (parent_location_id) REFERENCES locations(id)
+);
+
+-- Location types reference
+-- site     : Building, Office, Warehouse
+-- room     : Room, Floor, Department
+-- cabinet  : Filing cabinet, Shelf unit
+-- binder   : Ring binder, Folder, Box
+-- desk     : Temporary location (someone's desk)
+-- box      : Archive box, Storage container
+-- digital  : Cloud storage, NAS folder
+
+-- ============================================================
+-- PART 4: MOVEMENT TRACKING (NEW)
+-- ============================================================
+
+-- Document movement history (audit trail)
+CREATE TABLE IF NOT EXISTS document_movements (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_id TEXT NOT NULL,              -- Document that moved
+    
+    -- Movement details
+    from_location_id TEXT,                  -- Where it was (null if new)
+    to_location_id TEXT NOT NULL,           -- Where it went
+    movement_type TEXT NOT NULL,            -- check_in, check_out, transfer, file, retrieve
+    
+    -- Who and when
+    moved_by TEXT,                          -- Email or name of person
+    moved_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    
+    -- NFC scan info
+    scanned_nfc_tag TEXT,                   -- NFC tag that was scanned
+    scan_device TEXT,                       -- Device used (iPhone, Android, etc.)
+    
+    -- Optional notes
+    note TEXT,                              -- "Filed for year-end audit"
+    
+    FOREIGN KEY (document_id) REFERENCES documents(id),
+    FOREIGN KEY (from_location_id) REFERENCES locations(id),
+    FOREIGN KEY (to_location_id) REFERENCES locations(id)
+);
+
+-- Movement types reference
+-- check_in    : Document arrives at location
+-- check_out   : Document leaves location (taken by someone)
+-- transfer    : Move from one location to another
+-- file        : Put into permanent storage
+-- retrieve    : Take out for use
+-- return      : Put back after use
+-- archive     : Move to archive storage
+-- dispose     : Document destroyed/recycled
+
+-- ============================================================
+-- PART 5: ACCESS CONTROL (From 202)
+-- ============================================================
+
+-- Email whitelist for protected documents
+CREATE TABLE IF NOT EXISTS document_access (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_id TEXT NOT NULL,
+    email TEXT NOT NULL,
+    added_by TEXT,
+    expires_at TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    
+    FOREIGN KEY (document_id) REFERENCES documents(id),
+    UNIQUE(document_id, email)
+);
+
+-- Magic link tokens
+CREATE TABLE IF NOT EXISTS magic_links (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    token TEXT UNIQUE NOT NULL,
+    document_id TEXT NOT NULL,
+    email TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    used_at TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    
+    FOREIGN KEY (document_id) REFERENCES documents(id)
+);
+
+-- Access log (audit trail)
+CREATE TABLE IF NOT EXISTS access_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_id TEXT NOT NULL,
+    email TEXT,
+    ip_address TEXT,
+    user_agent TEXT,
+    action TEXT NOT NULL,                   -- view, download, request_access
+    success INTEGER DEFAULT 1,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    
+    FOREIGN KEY (document_id) REFERENCES documents(id)
+);
+
+-- ============================================================
+-- PART 6: INDEXES
+-- ============================================================
+
+-- Document indexes
+CREATE INDEX IF NOT EXISTS idx_documents_access ON documents(access_level);
+CREATE INDEX IF NOT EXISTS idx_documents_parent ON documents(parent_id);
+CREATE INDEX IF NOT EXISTS idx_documents_anchor ON documents(anchor);
+CREATE INDEX IF NOT EXISTS idx_documents_location ON documents(current_location_id);
+CREATE INDEX IF NOT EXISTS idx_documents_pillar ON documents(pillar_code);
+
+-- Relationship indexes
+CREATE INDEX IF NOT EXISTS idx_rel_parent ON document_relationships(parent_id);
+CREATE INDEX IF NOT EXISTS idx_rel_child ON document_relationships(child_id);
+CREATE INDEX IF NOT EXISTS idx_rel_type ON document_relationships(relationship_type);
+
+-- Location indexes
+CREATE INDEX IF NOT EXISTS idx_loc_parent ON locations(parent_location_id);
+CREATE INDEX IF NOT EXISTS idx_loc_type ON locations(location_type);
+CREATE INDEX IF NOT EXISTS idx_loc_nfc ON locations(nfc_tag_uid);
+
+-- Movement indexes
+CREATE INDEX IF NOT EXISTS idx_mov_document ON document_movements(document_id);
+CREATE INDEX IF NOT EXISTS idx_mov_from ON document_movements(from_location_id);
+CREATE INDEX IF NOT EXISTS idx_mov_to ON document_movements(to_location_id);
+CREATE INDEX IF NOT EXISTS idx_mov_date ON document_movements(moved_at);
+
+-- Access indexes
+CREATE INDEX IF NOT EXISTS idx_access_document ON document_access(document_id);
+CREATE INDEX IF NOT EXISTS idx_access_email ON document_access(email);
+CREATE INDEX IF NOT EXISTS idx_magic_token ON magic_links(token);
+CREATE INDEX IF NOT EXISTS idx_logs_document ON access_logs(document_id);
+
+-- ============================================================
+-- PART 7: VIEWS (Convenient queries)
+-- ============================================================
+
+-- View: Document with full location path
+CREATE VIEW IF NOT EXISTS v_documents_with_location AS
+SELECT 
+    d.*,
+    l.name AS location_name,
+    l.full_path AS location_path,
+    l.location_type
+FROM documents d
+LEFT JOIN locations l ON d.current_location_id = l.id;
+
+-- View: Document hierarchy (parent-child tree)
+CREATE VIEW IF NOT EXISTS v_document_tree AS
+WITH RECURSIVE doc_tree AS (
+    -- Root documents (no parent)
+    SELECT 
+        id, title, pillar_code, parent_id, relationship_type,
+        0 AS depth,
+        id AS root_id
+    FROM documents
+    WHERE parent_id IS NULL
+    
+    UNION ALL
+    
+    -- Children
+    SELECT 
+        d.id, d.title, d.pillar_code, d.parent_id, d.relationship_type,
+        dt.depth + 1,
+        dt.root_id
+    FROM documents d
+    JOIN doc_tree dt ON d.parent_id = dt.id
+)
+SELECT * FROM doc_tree;
+
+-- View: Location hierarchy
+CREATE VIEW IF NOT EXISTS v_location_tree AS
+WITH RECURSIVE loc_tree AS (
+    -- Root locations (no parent)
+    SELECT 
+        id, name, location_type, parent_location_id,
+        1 AS level,
+        name AS full_path
+    FROM locations
+    WHERE parent_location_id IS NULL
+    
+    UNION ALL
+    
+    -- Children
+    SELECT 
+        l.id, l.name, l.location_type, l.parent_location_id,
+        lt.level + 1,
+        lt.full_path || ' / ' || l.name
+    FROM locations l
+    JOIN loc_tree lt ON l.parent_location_id = lt.id
+)
+SELECT * FROM loc_tree;
+
+-- View: Document movement history with location names
+CREATE VIEW IF NOT EXISTS v_movement_history AS
+SELECT 
+    m.id,
+    m.document_id,
+    d.title AS document_title,
+    lf.name AS from_location,
+    lf.full_path AS from_path,
+    lt.name AS to_location,
+    lt.full_path AS to_path,
+    m.movement_type,
+    m.moved_by,
+    m.moved_at,
+    m.note
+FROM document_movements m
+JOIN documents d ON m.document_id = d.id
+LEFT JOIN locations lf ON m.from_location_id = lf.id
+JOIN locations lt ON m.to_location_id = lt.id
+ORDER BY m.moved_at DESC;
+
+-- ============================================================
+-- PART 8: SAMPLE DATA
+-- ============================================================
+
+-- Sample locations
+INSERT OR IGNORE INTO locations (id, location_type, name, parent_location_id, level, full_path, nfc_tag_uid) VALUES
+('LOC-SITE-HQ001', 'site', 'Office HQ', NULL, 1, 'Office HQ', 'NFC-SITE-001'),
+('LOC-ROOM-R302', 'room', 'Room 302 (Finance)', 'LOC-SITE-HQ001', 2, 'Office HQ / Room 302 (Finance)', 'NFC-ROOM-302'),
+('LOC-ROOM-R303', 'room', 'Room 303 (Legal)', 'LOC-SITE-HQ001', 2, 'Office HQ / Room 303 (Legal)', 'NFC-ROOM-303'),
+('LOC-CBNT-FA01', 'cabinet', 'Cabinet A', 'LOC-ROOM-R302', 3, 'Office HQ / Room 302 (Finance) / Cabinet A', 'NFC-CBNT-FA01'),
+('LOC-CBNT-FA02', 'cabinet', 'Cabinet B', 'LOC-ROOM-R302', 3, 'Office HQ / Room 302 (Finance) / Cabinet B', 'NFC-CBNT-FA02'),
+('LOC-BNDR-2024C', 'binder', '2024 Contracts', 'LOC-CBNT-FA01', 4, 'Office HQ / Room 302 (Finance) / Cabinet A / 2024 Contracts', 'NFC-BNDR-2024C'),
+('LOC-BNDR-2024I', 'binder', '2024 Invoices', 'LOC-CBNT-FA01', 4, 'Office HQ / Room 302 (Finance) / Cabinet A / 2024 Invoices', 'NFC-BNDR-2024I'),
+('LOC-DESK-PB01', 'desk', 'PB Desk', 'LOC-ROOM-R302', 3, 'Office HQ / Room 302 (Finance) / PB Desk', 'NFC-DESK-PB01'),
+('LOC-DIGI-NAS01', 'digital', 'NAS Archive', NULL, 1, 'NAS Archive', NULL);
+
+-- ============================================================
+-- PART 9: USEFUL QUERIES
+-- ============================================================
+
+-- Get all children of a document
+-- SELECT * FROM documents WHERE parent_id = 'CNTR-ABC12-XS43K';
+
+-- Get full document tree from a root
+-- SELECT * FROM v_document_tree WHERE root_id = 'CNTR-ABC12-XS43K' ORDER BY depth;
+
+-- Get document movement history
+-- SELECT * FROM v_movement_history WHERE document_id = 'CNTR-ABC12-XS43K';
+
+-- Find all documents in a location (including sub-locations)
+-- WITH RECURSIVE sub_locations AS (
+--     SELECT id FROM locations WHERE id = 'LOC-ROOM-R302'
+--     UNION ALL
+--     SELECT l.id FROM locations l JOIN sub_locations sl ON l.parent_location_id = sl.id
+-- )
+-- SELECT d.* FROM documents d WHERE d.current_location_id IN (SELECT id FROM sub_locations);
+
+-- Get location contents
+-- SELECT d.id, d.title, d.pillar_code FROM documents d WHERE current_location_id = 'LOC-BNDR-2024C';
+
+-- Track document journey
+-- SELECT * FROM document_movements WHERE document_id = 'CNTR-ABC12-XS43K' ORDER BY moved_at;
