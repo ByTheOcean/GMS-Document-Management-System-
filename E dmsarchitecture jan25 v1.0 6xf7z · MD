@@ -1,0 +1,551 @@
+# BeeBox DMS - Semantic Document Engine
+
+## Document Classification & Digital Link System
+
+**Version:** 7.0  
+**Architecture:** Pillar-Anchor-Seal (PAS)  
+**Date:** January 2025  
+**Author:** BeeBox / pb9801
+
+---
+
+## Part I: System Overview
+
+### The Journey
+
+```
+Before                          Now                            Future
+──────                          ────                           ──────
+Cloud-first thinking    →    Local-first + Cloud sync    →    Private NAS + Cloud backup
+Depend on services      →    Own your data               →    Full control
+Complex setup           →    PowerShell + HTML           →    Self-hosted everything
+```
+
+### Current Production Stack
+
+| Component | Tool | Location | SEAL |
+|-----------|------|----------|------|
+| **Processing** | DMS Processor v4.0 | Local (PowerShell) | 7YWRX |
+| **OCR** | Tesseract (Chinese/English) | Local | - |
+| **Classification** | Pattern + Cloudflare AI | Hybrid | - |
+| **Dashboard** | HTML v2.0 | Local (browser) | MHX1X |
+| **Digital Links** | Local Resolver | Local | GVEDX |
+| **Metadata** | Logseq Cover Pages | Local | - |
+| **Documents** | 01_OUTBOX | Local | - |
+| **Public Sharing** | BeeBox 202 | Cloudflare | MGPFK |
+
+---
+
+## Part II: File Registry
+
+### Core Files
+
+| File | SEAL | Purpose |
+|------|------|---------|
+| `E_DMSProcessor_Step4_Jan25_v4.0_7YWRX.ps1` | 7YWRX | Process, OCR, classify documents |
+| `E_DMSDashboard_Jan25_v2.0_MHX1X.html` | MHX1X | View, search, filter, graph |
+| `E_LocalResolver_Jan25_v1.1_GVEDX.ps1` | GVEDX | Local Digital Link server |
+| `E_BeeBox202Worker_Jan25_v2.0_MGPFK.js` | MGPFK | Public sharing (Cloudflare) |
+| `E_BeeBox202Schema_Jan25_v2.0_1BTGX.sql` | 1BTGX | Database schema |
+| `E_BeeBoxSync_Jan25_v1.0_DSSVJ.ps1` | DSSVJ | Sync & access control |
+
+### Folder Structure
+
+```
+Documents/
+├── 00_INBOX/                    ← Drop files here
+│   ├── email/                   ← From email
+│   ├── wechat/                  ← From WeChat
+│   ├── scan/                    ← Scanned documents
+│   ├── sms/                     ← SMS attachments
+│   ├── courier/                 ← Courier documents
+│   └── inperson/                ← In-person received
+├── 01_OUTBOX/                   ← Processed files (renamed)
+├── 02_LOGSEQ/                   ← Cover pages (metadata)
+├── dms-config.json              ← Credentials
+├── DMS.ps1                      ← Main processor
+├── Dashboard.html               ← Local dashboard
+└── Resolver.ps1                 ← Local Digital Link server
+```
+
+---
+
+## Part III: Architecture Deep Dive
+
+### Data Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         DOCUMENT LIFECYCLE                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│   ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐         │
+│   │  INTAKE  │───▶│ PROCESS  │───▶│  STORE   │───▶│  ACCESS  │         │
+│   └──────────┘    └──────────┘    └──────────┘    └──────────┘         │
+│        │               │               │               │                │
+│        ▼               ▼               ▼               ▼                │
+│   ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐         │
+│   │ 00_INBOX │    │   DMS    │    │01_OUTBOX │    │Dashboard │         │
+│   │ /origin/ │    │Processor │    │02_LOGSEQ │    │ Resolver │         │
+│   └──────────┘    └──────────┘    └──────────┘    └──────────┘         │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Processing Pipeline
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         PROCESSING STEPS                                 │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  Step 1: SEAL          SHA256(file) → Base32 → 5-char integrity hash    │
+│          ─────         Example: 7YWRX                                    │
+│                                                                          │
+│  Step 2: EXTRACT       PDF/DOCX → Text | Image → Tesseract OCR          │
+│          ───────       Chinese + English supported                       │
+│                                                                          │
+│  Step 3: CLASSIFY      Pattern match OR LLM fallback                    │
+│          ────────      → Pillar code (MEMO, 810, CNTR...)               │
+│                        → Subject, Context, Creator                       │
+│                                                                          │
+│  Step 4: ANCHOR        SHA256(Pillar + Creator + Audience) → 5-char     │
+│          ──────        Links related documents together                  │
+│                                                                          │
+│  Step 5: RENAME        {Verb}_{Subject}_{Context}_v{Ver}_{SEAL}.{ext}   │
+│          ──────        Example: I_AcmeInvoice_Jan25_v1.0_7X3KM.pdf      │
+│                                                                          │
+│  Step 6: LOGSEQ        Generate cover page with Dublin Core metadata    │
+│          ──────        Bi-directional links: [[Pillar_MEMO]]            │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Part IV: The DMS Periodic Table
+
+### Inspired by "AI Periodic Table" - A Scientific Framework for Document Intelligence
+
+Just as the periodic table organizes elements by their fundamental properties, we can organize document management concepts by their **function**, **layer**, and **interaction patterns**.
+
+```
+╔═══════════════════════════════════════════════════════════════════════════════╗
+║                                                                               ║
+║                    DMS PERIODIC TABLE OF ELEMENTS                             ║
+║                    ─────────────────────────────────                          ║
+║                    Semantic Document Intelligence Framework                    ║
+║                                                                               ║
+╠═══════════════════════════════════════════════════════════════════════════════╣
+║                                                                               ║
+║  ┌─────────────────────────────────────────────────────────────────────────┐  ║
+║  │                      LAYER 1: IDENTITY ELEMENTS                         │  ║
+║  │                      (Atomic - Indivisible Units)                       │  ║
+║  ├─────────────────────────────────────────────────────────────────────────┤  ║
+║  │                                                                         │  ║
+║  │   ┌───────┐   ┌───────┐   ┌───────┐   ┌───────┐   ┌───────┐           │  ║
+║  │   │  Se   │   │  An   │   │  Pi   │   │  Ve   │   │  Co   │           │  ║
+║  │   │ SEAL  │   │ANCHOR │   │PILLAR │   │ VERB  │   │CONTEXT│           │  ║
+║  │   │       │   │       │   │       │   │       │   │       │           │  ║
+║  │   │ 5-chr │   │ 5-chr │   │ 3-4ch │   │ 1-chr │   │ 5-6ch │           │  ║
+║  │   │SHA256 │   │SHA256 │   │ Code  │   │ I/E/O │   │ Date  │           │  ║
+║  │   └───────┘   └───────┘   └───────┘   └───────┘   └───────┘           │  ║
+║  │   Integrity   Relation    Type        Direction   Time                 │  ║
+║  │                                                                         │  ║
+║  └─────────────────────────────────────────────────────────────────────────┘  ║
+║                                                                               ║
+║  ┌─────────────────────────────────────────────────────────────────────────┐  ║
+║  │                      LAYER 2: EXTRACTION ELEMENTS                       │  ║
+║  │                      (Molecular - Compound Units)                       │  ║
+║  ├─────────────────────────────────────────────────────────────────────────┤  ║
+║  │                                                                         │  ║
+║  │   ┌───────┐   ┌───────┐   ┌───────┐   ┌───────┐   ┌───────┐           │  ║
+║  │   │  Tx   │   │  Oc   │   │  Or   │   │  Cr   │   │  Au   │           │  ║
+║  │   │ TEXT  │   │  OCR  │   │ORIGIN │   │CREATE │   │AUDIENC│           │  ║
+║  │   │       │   │       │   │       │   │       │   │       │           │  ║
+║  │   │ UTF-8 │   │Tesser │   │Source │   │Sender │   │Recipi │           │  ║
+║  │   │Extract│   │ act   │   │Channel│   │ent    │   │ent    │           │  ║
+║  │   └───────┘   └───────┘   └───────┘   └───────┘   └───────┘           │  ║
+║  │   Content     Vision      Channel     Who From    Who To               │  ║
+║  │                                                                         │  ║
+║  └─────────────────────────────────────────────────────────────────────────┘  ║
+║                                                                               ║
+║  ┌─────────────────────────────────────────────────────────────────────────┐  ║
+║  │                      LAYER 3: INTELLIGENCE ELEMENTS                     │  ║
+║  │                      (Organic - Adaptive Units)                         │  ║
+║  ├─────────────────────────────────────────────────────────────────────────┤  ║
+║  │                                                                         │  ║
+║  │   ┌───────┐   ┌───────┐   ┌───────┐   ┌───────┐   ┌───────┐           │  ║
+║  │   │  Pa   │   │  Ll   │   │  Cf   │   │  Ol   │   │  Fb   │           │  ║
+║  │   │PATTERN│   │  LLM  │   │CFLARE │   │OLLAMA │   │FALLBK │           │  ║
+║  │   │       │   │       │   │       │   │       │   │       │           │  ║
+║  │   │ Regex │   │ Cloud │   │Worker │   │ Local │   │ Chain │           │  ║
+║  │   │ Match │   │  API  │   │  AI   │   │  LLM  │   │       │           │  ║
+║  │   └───────┘   └───────┘   └───────┘   └───────┘   └───────┘           │  ║
+║  │   Rule-base   Neural      Edge AI     Privacy     Resilient           │  ║
+║  │                                                                         │  ║
+║  └─────────────────────────────────────────────────────────────────────────┘  ║
+║                                                                               ║
+║  ┌─────────────────────────────────────────────────────────────────────────┐  ║
+║  │                      LAYER 4: PRESENTATION ELEMENTS                     │  ║
+║  │                      (Interface - Access Units)                         │  ║
+║  ├─────────────────────────────────────────────────────────────────────────┤  ║
+║  │                                                                         │  ║
+║  │   ┌───────┐   ┌───────┐   ┌───────┐   ┌───────┐   ┌───────┐           │  ║
+║  │   │  Db   │   │  Lr   │   │  Ls   │   │  Dl   │   │  Gr   │           │  ║
+║  │   │DASHBD │   │RESOLV │   │LOGSEQ │   │DIGILINK│  │ GRAPH │           │  ║
+║  │   │       │   │       │   │       │   │       │   │       │           │  ║
+║  │   │ HTML  │   │ HTTP  │   │  MD   │   │  URL  │   │ Nodes │           │  ║
+║  │   │ Local │   │Server │   │ Pages │   │Scheme │   │ Edges │           │  ║
+║  │   └───────┘   └───────┘   └───────┘   └───────┘   └───────┘           │  ║
+║  │   View        Serve       Notes       Address     Connect             │  ║
+║  │                                                                         │  ║
+║  └─────────────────────────────────────────────────────────────────────────┘  ║
+║                                                                               ║
+║  ┌─────────────────────────────────────────────────────────────────────────┐  ║
+║  │                      LAYER 5: SECURITY ELEMENTS                         │  ║
+║  │                      (Shield - Protection Units)                        │  ║
+║  ├─────────────────────────────────────────────────────────────────────────┤  ║
+║  │                                                                         │  ║
+║  │   ┌───────┐   ┌───────┐   ┌───────┐   ┌───────┐   ┌───────┐           │  ║
+║  │   │  Wl   │   │  Ml   │   │  Ac   │   │  Al   │   │  Ex   │           │  ║
+║  │   │WHTLST │   │MAGICLK│   │ACCESS │   │AUDITLG│   │EXPIRY │           │  ║
+║  │   │       │   │       │   │       │   │       │   │       │           │  ║
+║  │   │ Email │   │ Token │   │ Level │   │ Track │   │ Time  │           │  ║
+║  │   │ List  │   │ 15min │   │Pub/Pri│   │  Who  │   │ Limit │           │  ║
+║  │   └───────┘   └───────┘   └───────┘   └───────┘   └───────┘           │  ║
+║  │   Gate        Verify      Control     Audit       Temporal            │  ║
+║  │                                                                         │  ║
+║  └─────────────────────────────────────────────────────────────────────────┘  ║
+║                                                                               ║
+╚═══════════════════════════════════════════════════════════════════════════════╝
+```
+
+---
+
+### Element Interactions (Bonding Patterns)
+
+```
+╔═══════════════════════════════════════════════════════════════════════════════╗
+║                         ELEMENT BONDING PATTERNS                              ║
+╠═══════════════════════════════════════════════════════════════════════════════╣
+║                                                                               ║
+║  COMPOUND 1: FILENAME                                                         ║
+║  ─────────────────────                                                        ║
+║                                                                               ║
+║     Ve  +  Subject  +  Co  +  Version  +  Se  +  Extension                   ║
+║     ──     ───────     ──     ───────     ──     ─────────                   ║
+║      │         │        │         │        │          │                       ║
+║      └────┬────┴────┬───┴────┬────┴───┬────┴─────┬────┘                       ║
+║           │         │        │        │          │                            ║
+║           ▼         ▼        ▼        ▼          ▼                            ║
+║         I_AcmeInvoice_Jan25_v1.0_7X3KM.pdf                                   ║
+║                                                                               ║
+║                                                                               ║
+║  COMPOUND 2: DOCUMENT ID                                                      ║
+║  ───────────────────────                                                      ║
+║                                                                               ║
+║     Pi  +  An  +  Se                                                         ║
+║     ──     ──     ──                                                         ║
+║      │      │      │                                                          ║
+║      └──┬───┴──┬───┘                                                          ║
+║         │      │                                                              ║
+║         ▼      ▼                                                              ║
+║     MEMO-KKFR2-XS43K                                                         ║
+║                                                                               ║
+║                                                                               ║
+║  COMPOUND 3: ANCHOR FORMULA                                                   ║
+║  ──────────────────────────                                                   ║
+║                                                                               ║
+║     An = SHA256( Pi + Cr + Au )[0:5]                                         ║
+║                   ──   ──   ──                                                ║
+║                    │    │    │                                                ║
+║                    │    │    └── Audience (recipient)                         ║
+║                    │    └─────── Creator (sender)                             ║
+║                    └──────────── Pillar (document type)                       ║
+║                                                                               ║
+║                                                                               ║
+║  COMPOUND 4: CLASSIFICATION CHAIN                                             ║
+║  ────────────────────────────────                                             ║
+║                                                                               ║
+║     Pa ──▶ Ll ──▶ Ol ──▶ Fb                                                  ║
+║     ──     ──     ──     ──                                                  ║
+║      │      │      │      │                                                   ║
+║      │      │      │      └── Ultimate fallback (DOC)                         ║
+║      │      │      └───────── Offline LLM (Ollama)                            ║
+║      │      └──────────────── Cloud LLM (Cloudflare)                          ║
+║      └─────────────────────── Pattern matching (fastest)                      ║
+║                                                                               ║
+║     Confidence: 1.0 → 0.8 → 0.7 → 0.5                                        ║
+║                                                                               ║
+╚═══════════════════════════════════════════════════════════════════════════════╝
+```
+
+---
+
+### Reaction Types (System Processes)
+
+```
+╔═══════════════════════════════════════════════════════════════════════════════╗
+║                           REACTION TYPES                                      ║
+╠═══════════════════════════════════════════════════════════════════════════════╣
+║                                                                               ║
+║  REACTION 1: INGESTION                                                        ║
+║  ─────────────────────                                                        ║
+║                                                                               ║
+║     Raw File + Origin ──▶ INBOX/{origin}/                                    ║
+║                                                                               ║
+║     Catalysts: Manual drop, Email forward, WeChat save                       ║
+║                                                                               ║
+║                                                                               ║
+║  REACTION 2: TRANSFORMATION                                                   ║
+║  ──────────────────────────                                                   ║
+║                                                                               ║
+║     INBOX File + [Tx|Oc] + [Pa|Ll] ──▶ Classified Document                   ║
+║                                                                               ║
+║     Byproducts: SEAL, ANCHOR, Pillar, Metadata                               ║
+║                                                                               ║
+║                                                                               ║
+║  REACTION 3: CRYSTALLIZATION                                                  ║
+║  ───────────────────────────                                                  ║
+║                                                                               ║
+║     Classified Doc ──▶ Renamed File + Logseq Cover Page                      ║
+║                                                                               ║
+║     Output: {Ve}_{Subject}_{Co}_v{Ver}_{Se}.{ext}                            ║
+║             {Pi}-{An}-{Se}.md                                                 ║
+║                                                                               ║
+║                                                                               ║
+║  REACTION 4: RESOLUTION                                                       ║
+║  ──────────────────────                                                       ║
+║                                                                               ║
+║     Digital Link + [Wl|Ml] ──▶ Document View                                 ║
+║                                                                               ║
+║     Access Control: Public | Protected | Private                             ║
+║                                                                               ║
+╚═══════════════════════════════════════════════════════════════════════════════╝
+```
+
+---
+
+### State Diagram (Document States)
+
+```
+╔═══════════════════════════════════════════════════════════════════════════════╗
+║                           DOCUMENT STATES                                     ║
+╠═══════════════════════════════════════════════════════════════════════════════╣
+║                                                                               ║
+║                              ┌─────────┐                                      ║
+║                              │   RAW   │                                      ║
+║                              │ (Inbox) │                                      ║
+║                              └────┬────┘                                      ║
+║                                   │                                           ║
+║                                   ▼ Process                                   ║
+║                              ┌─────────┐                                      ║
+║                              │CLASSIFIED│                                     ║
+║                              │(Metadata)│                                     ║
+║                              └────┬────┘                                      ║
+║                                   │                                           ║
+║                                   ▼ Store                                     ║
+║                              ┌─────────┐                                      ║
+║                              │ SEALED  │                                      ║
+║                              │(Outbox) │                                      ║
+║                              └────┬────┘                                      ║
+║                                   │                                           ║
+║                    ┌──────────────┼──────────────┐                           ║
+║                    ▼              ▼              ▼                            ║
+║              ┌─────────┐   ┌─────────┐   ┌─────────┐                         ║
+║              │ PRIVATE │   │PROTECTED│   │ PUBLIC  │                         ║
+║              │(Owner)  │   │(Whitelist)│ │(Anyone) │                         ║
+║              └─────────┘   └─────────┘   └─────────┘                         ║
+║                                                                               ║
+╚═══════════════════════════════════════════════════════════════════════════════╝
+```
+
+---
+
+## Part V: Pillar Code Registry
+
+### Document Type Classification
+
+| Code | Name | Description | Pattern Keywords |
+|------|------|-------------|------------------|
+| 810 | Invoice | Commercial invoices | invoice, 发票, bill |
+| STMT | Statement | Bank/account statements | statement, 对账单 |
+| CNTR | Contract | Agreements, contracts | contract, agreement, 合同 |
+| LETR | Letter | Correspondence | letter, 信函 |
+| MEMO | Memorandum | Internal memos, notes | memo, 备忘录, note |
+| RPT | Report | Reports, analyses | report, analysis, 报告 |
+| RCPT | Receipt | Payment receipts | receipt, 收据 |
+| XFER | Transfer | Wire transfers | transfer, wire, 转账 |
+| VISA | Visa | Immigration documents | visa, 签证 |
+| I94 | ArrivalDeparture | I-94 records | i-94, arrival, departure |
+| PASSPORT | Passport | Passport documents | passport, 护照 |
+| DOC | Document | Unclassified (default) | - |
+
+---
+
+## Part VI: Usage Guide
+
+### Daily Workflow
+
+```powershell
+# 1. Drop files into origin folders
+#    00_INBOX/email/
+#    00_INBOX/wechat/
+#    00_INBOX/scan/
+
+# 2. Process all origins at once
+.\DMS.ps1 -InboxPath ".\00_INBOX" -ProcessAllOrigins -UseOCR -UseLLM
+
+# 3. View in Dashboard
+Start-Process ".\E_DMSDashboard_Jan25_v2.0_MHX1X.html"
+
+# 4. Start Local Resolver (optional, for Digital Links)
+.\E_LocalResolver_Jan25_v1.1_GVEDX.ps1
+# Then open: http://localhost:3000/doc/MEMO-KKFR2-XS43K
+```
+
+### Access Control (BeeBox 202)
+
+```powershell
+# Add email to whitelist
+.\E_BeeBoxSync_Jan25_v1.0_DSSVJ.ps1 -AddAccess -DocId "MEMO-KKFR2-XS43K" -Email "partner@company.com"
+
+# Add with expiry
+.\E_BeeBoxSync_Jan25_v1.0_DSSVJ.ps1 -AddAccess -DocId "MEMO-KKFR2-XS43K" -Email "temp@vendor.com" -ExpiresAt "2025-06-30"
+
+# List access
+.\E_BeeBoxSync_Jan25_v1.0_DSSVJ.ps1 -ListAccess -DocId "MEMO-KKFR2-XS43K"
+
+# Remove access
+.\E_BeeBoxSync_Jan25_v1.0_DSSVJ.ps1 -RemoveAccess -DocId "MEMO-KKFR2-XS43K" -Email "partner@company.com"
+
+# Change access level
+.\E_BeeBoxSync_Jan25_v1.0_DSSVJ.ps1 -SetPublic -DocId "MEMO-KKFR2-XS43K"
+.\E_BeeBoxSync_Jan25_v1.0_DSSVJ.ps1 -SetProtected -DocId "MEMO-KKFR2-XS43K"
+.\E_BeeBoxSync_Jan25_v1.0_DSSVJ.ps1 -SetPrivate -DocId "MEMO-KKFR2-XS43K"
+```
+
+---
+
+## Part VII: Future Architecture
+
+### Private NAS Vision
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  Your Private NAS (Synology/QNAP/TrueNAS)                              │
+│  ┌───────────────────────────────────────────────────────────────────┐ │
+│  │  Documents/                                                        │ │
+│  │  ├── 00_INBOX/                                                    │ │
+│  │  ├── 01_OUTBOX/        ← All your documents                       │ │
+│  │  ├── 02_LOGSEQ/        ← All metadata                             │ │
+│  │  └── DMS.ps1           ← Processor                                │ │
+│  │                                                                    │ │
+│  │  Docker:                                                           │ │
+│  │  ├── Local Resolver    ← http://nas.local:3000                    │ │
+│  │  ├── Ollama            ← Local LLM (no cloud needed)              │ │
+│  │  └── Logseq Server     ← Web access to notes                      │ │
+│  └───────────────────────────────────────────────────────────────────┘ │
+│                              │                                          │
+│                              ▼                                          │
+│                    ┌─────────────────┐                                 │
+│                    │ Sync (optional) │                                 │
+│                    └─────────────────┘                                 │
+│                      │           │                                      │
+│          ┌───────────┘           └───────────┐                         │
+│          ▼                                   ▼                         │
+│  ┌───────────────┐                  ┌───────────────┐                  │
+│  │ Cloudflare    │                  │ Google Drive  │                  │
+│  │ (public docs) │                  │ (backup)      │                  │
+│  └───────────────┘                  └───────────────┘                  │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Deployment Options Comparison
+
+| Aspect | Local Only | Cloudflare | Google Cloud | Hybrid |
+|--------|------------|------------|--------------|--------|
+| **Cost** | Free | Low | Medium | Low |
+| **Privacy** | Maximum | Good | Good | Maximum |
+| **Speed** | Fast | Very Fast | Fast | Optimal |
+| **Public Share** | No | Yes | Yes | Yes |
+| **Offline** | Yes | No | No | Partial |
+| **Complexity** | Simple | Simple | Medium | Medium |
+
+---
+
+## Part VIII: Version History
+
+| Date | Version | SEAL | Changes |
+|------|---------|------|---------|
+| Jan 2025 | DMS v7.0 Step 4 | 7YWRX | OCR, ProcessAllOrigins, Creator detection |
+| Jan 2025 | Dashboard v2.0 | MHX1X | Logseq-like links, Graph view |
+| Jan 2025 | Local Resolver v1.1 | GVEDX | Fixed encoding, HTML entities |
+| Jan 2025 | BeeBox 202 v2.0 | MGPFK | Email whitelist, Magic links |
+| Jan 2025 | BeeBox Schema v2.0 | 1BTGX | Access control tables |
+| Jan 2025 | BeeBox Sync v1.0 | DSSVJ | PowerShell sync & access manager |
+
+---
+
+## Part IX: Key Insights
+
+### What We Discovered
+
+| Discovery | Power |
+|-----------|-------|
+| **PowerShell** | Can do anything Windows needs |
+| **Single HTML file** | Full dashboard, no server needed |
+| **Local HTTP server** | Digital Links without cloud |
+| **Tesseract** | OCR without API costs |
+| **Logseq** | Knowledge graph, local-first |
+| **SEAL/ANCHOR** | Your own integrity system |
+| **Cloudflare Workers** | Global, fast, cheap when needed |
+
+### Design Principles
+
+1. **Local-First**: Own your data, cloud is optional
+2. **Zero-Trust Integrity**: SEAL proves document hasn't changed
+3. **Relationship Mapping**: ANCHOR links related documents
+4. **Graceful Degradation**: Pattern → LLM → Ollama → Fallback
+5. **Minimal Dependencies**: PowerShell + Browser = Complete system
+6. **Scientific Naming**: Every file has verifiable identity
+
+---
+
+## Appendix: Quick Reference Card
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        DMS QUICK REFERENCE                              │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  FILENAME FORMAT:                                                       │
+│  {Verb}_{Subject}_{Context}_v{Version}_{SEAL}.{ext}                    │
+│  Example: I_AcmeInvoice_Jan25_v1.0_7X3KM.pdf                           │
+│                                                                         │
+│  DOCUMENT ID FORMAT:                                                    │
+│  {Pillar}-{Anchor}-{Seal}                                              │
+│  Example: MEMO-KKFR2-XS43K                                             │
+│                                                                         │
+│  SEAL = SHA256(file)[0:5] in Base32                                    │
+│  ANCHOR = SHA256(Pillar+Creator+Audience)[0:5] in Base32               │
+│                                                                         │
+│  VERBS:                                                                 │
+│  I = Inbound | E = External | O = Outbound                             │
+│                                                                         │
+│  ACCESS LEVELS:                                                         │
+│  Public = Anyone | Protected = Whitelist | Private = Owner             │
+│                                                                         │
+│  DIGITAL LINK:                                                          │
+│  Local: http://localhost:3000/doc/{ID}                                 │
+│  Cloud: https://3rwipe.com/doc/{ID}                                    │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+*Document generated by BeeBox DMS v7.0*
+*Pillar-Anchor-Seal Architecture*
+*January 2025*
