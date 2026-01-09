@@ -1,0 +1,709 @@
+/**
+ * BeeBox 202.5 - Document Trace & Track
+ * Version: 2.5
+ * Features:
+ *   - Email whitelist, Magic links (from 202)
+ *   - Parent/Child document relationships (NEW)
+ *   - Physical location tracking with NFC (NEW)
+ *   - Movement history / audit trail (NEW)
+ */
+
+// ============================================================
+// CONFIGURATION
+// ============================================================
+
+const CONFIG = {
+    MAGIC_LINK_EXPIRY_MINUTES: 15,
+    SESSION_EXPIRY_HOURS: 24,
+    FROM_EMAIL: 'noreply@3rwipe.com',
+    FROM_NAME: 'BeeBox Digital Link'
+};
+
+// ============================================================
+// UTILITIES
+// ============================================================
+
+function generateToken(length = 32) {
+    const chars = 'ABCDEFGHJKMNPQRSTVWXYZabcdefghjkmnpqrstvwxyz0123456789';
+    let token = '';
+    const randomValues = new Uint8Array(length);
+    crypto.getRandomValues(randomValues);
+    for (let i = 0; i < length; i++) {
+        token += chars[randomValues[i] % chars.length];
+    }
+    return token;
+}
+
+function generateLocationId(type, name) {
+    const prefix = {
+        site: 'SITE', room: 'ROOM', cabinet: 'CBNT',
+        binder: 'BNDR', desk: 'DESK', box: 'BOX', digital: 'DIGI'
+    };
+    const code = name.replace(/[^A-Z0-9]/gi, '').substring(0, 4).toUpperCase();
+    const random = Math.random().toString(36).substring(2, 4).toUpperCase();
+    return `LOC-${prefix[type] || 'UNKN'}-${code}${random}`;
+}
+
+function jsonResponse(data, status = 200) {
+    return new Response(JSON.stringify(data), {
+        status,
+        headers: { 'Content-Type': 'application/json' }
+    });
+}
+
+function htmlResponse(html, status = 200, headers = {}) {
+    return new Response(html, {
+        status,
+        headers: { 'Content-Type': 'text/html', ...headers }
+    });
+}
+
+// ============================================================
+// DATABASE OPERATIONS - DOCUMENTS
+// ============================================================
+
+async function getDocument(db, docId) {
+    return await db.prepare(`
+        SELECT d.*, l.name as location_name, l.full_path as location_path
+        FROM documents d
+        LEFT JOIN locations l ON d.current_location_id = l.id
+        WHERE d.id = ?
+    `).bind(docId).first();
+}
+
+async function getDocumentChildren(db, docId) {
+    return await db.prepare(`
+        SELECT id, title, pillar_code, relationship_type, created_at
+        FROM documents WHERE parent_id = ?
+        ORDER BY created_at
+    `).bind(docId).all();
+}
+
+async function getDocumentParent(db, docId) {
+    const doc = await db.prepare('SELECT parent_id FROM documents WHERE id = ?').bind(docId).first();
+    if (doc?.parent_id) {
+        return await getDocument(db, doc.parent_id);
+    }
+    return null;
+}
+
+async function getDocumentTree(db, rootId) {
+    // Get all descendants
+    const results = await db.prepare(`
+        WITH RECURSIVE doc_tree AS (
+            SELECT id, title, pillar_code, seal, parent_id, relationship_type, 0 AS depth
+            FROM documents WHERE id = ?
+            UNION ALL
+            SELECT d.id, d.title, d.pillar_code, d.seal, d.parent_id, d.relationship_type, dt.depth + 1
+            FROM documents d
+            JOIN doc_tree dt ON d.parent_id = dt.id
+            WHERE dt.depth < 10
+        )
+        SELECT * FROM doc_tree ORDER BY depth, title
+    `).bind(rootId).all();
+    return results;
+}
+
+async function getDocumentSiblings(db, docId) {
+    const doc = await db.prepare('SELECT anchor FROM documents WHERE id = ?').bind(docId).first();
+    if (!doc) return { results: [] };
+    return await db.prepare(`
+        SELECT id, title, pillar_code, seal FROM documents 
+        WHERE anchor = ? AND id != ?
+        ORDER BY created_at
+    `).bind(doc.anchor, docId).all();
+}
+
+async function setDocumentParent(db, docId, parentId, relationshipType) {
+    await db.prepare(`
+        UPDATE documents SET parent_id = ?, relationship_type = ?, updated_at = datetime('now')
+        WHERE id = ?
+    `).bind(parentId, relationshipType, docId).run();
+}
+
+// ============================================================
+// DATABASE OPERATIONS - LOCATIONS
+// ============================================================
+
+async function getLocation(db, locationId) {
+    return await db.prepare('SELECT * FROM locations WHERE id = ?').bind(locationId).first();
+}
+
+async function getLocationByNfc(db, nfcTagUid) {
+    return await db.prepare('SELECT * FROM locations WHERE nfc_tag_uid = ?').bind(nfcTagUid).first();
+}
+
+async function getLocationTree(db, rootId = null) {
+    if (rootId) {
+        return await db.prepare(`
+            WITH RECURSIVE loc_tree AS (
+                SELECT id, name, location_type, parent_location_id, 1 AS level, name AS full_path
+                FROM locations WHERE id = ?
+                UNION ALL
+                SELECT l.id, l.name, l.location_type, l.parent_location_id, lt.level + 1, lt.full_path || ' / ' || l.name
+                FROM locations l
+                JOIN loc_tree lt ON l.parent_location_id = lt.id
+                WHERE lt.level < 10
+            )
+            SELECT * FROM loc_tree ORDER BY level, name
+        `).bind(rootId).all();
+    }
+    return await db.prepare(`
+        SELECT * FROM locations ORDER BY level, name
+    `).all();
+}
+
+async function getLocationContents(db, locationId, includeSublocations = false) {
+    if (includeSublocations) {
+        return await db.prepare(`
+            WITH RECURSIVE sub_locations AS (
+                SELECT id FROM locations WHERE id = ?
+                UNION ALL
+                SELECT l.id FROM locations l JOIN sub_locations sl ON l.parent_location_id = sl.id
+            )
+            SELECT d.id, d.title, d.pillar_code, d.seal, l.name as location_name
+            FROM documents d
+            JOIN locations l ON d.current_location_id = l.id
+            WHERE d.current_location_id IN (SELECT id FROM sub_locations)
+            ORDER BY l.level, d.title
+        `).bind(locationId).all();
+    }
+    return await db.prepare(`
+        SELECT id, title, pillar_code, seal FROM documents WHERE current_location_id = ?
+    `).bind(locationId).all();
+}
+
+async function createLocation(db, data) {
+    const id = data.id || generateLocationId(data.location_type, data.name);
+    
+    // Build full path
+    let fullPath = data.name;
+    if (data.parent_location_id) {
+        const parent = await getLocation(db, data.parent_location_id);
+        if (parent) {
+            fullPath = `${parent.full_path} / ${data.name}`;
+        }
+    }
+    
+    const level = data.parent_location_id ? 
+        (await getLocation(db, data.parent_location_id))?.level + 1 || 1 : 1;
+    
+    await db.prepare(`
+        INSERT INTO locations (id, location_type, name, description, parent_location_id, level, full_path, nfc_tag_uid)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+        id, data.location_type, data.name, data.description || null,
+        data.parent_location_id || null, level, fullPath, data.nfc_tag_uid || null
+    ).run();
+    
+    return id;
+}
+
+// ============================================================
+// DATABASE OPERATIONS - MOVEMENTS
+// ============================================================
+
+async function recordMovement(db, data) {
+    // Get current location
+    const doc = await db.prepare('SELECT current_location_id FROM documents WHERE id = ?')
+        .bind(data.document_id).first();
+    
+    const fromLocationId = doc?.current_location_id || null;
+    
+    // Record movement
+    await db.prepare(`
+        INSERT INTO document_movements (document_id, from_location_id, to_location_id, movement_type, moved_by, scanned_nfc_tag, scan_device, note)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+        data.document_id, fromLocationId, data.to_location_id,
+        data.movement_type, data.moved_by || null,
+        data.scanned_nfc_tag || null, data.scan_device || null, data.note || null
+    ).run();
+    
+    // Update document's current location
+    await db.prepare(`
+        UPDATE documents SET current_location_id = ?, updated_at = datetime('now') WHERE id = ?
+    `).bind(data.to_location_id, data.document_id).run();
+    
+    return true;
+}
+
+async function getDocumentMovements(db, docId) {
+    return await db.prepare(`
+        SELECT 
+            m.*,
+            lf.name as from_location_name, lf.full_path as from_path,
+            lt.name as to_location_name, lt.full_path as to_path
+        FROM document_movements m
+        LEFT JOIN locations lf ON m.from_location_id = lf.id
+        JOIN locations lt ON m.to_location_id = lt.id
+        WHERE m.document_id = ?
+        ORDER BY m.moved_at DESC
+    `).bind(docId).all();
+}
+
+// ============================================================
+// HTML TEMPLATES
+// ============================================================
+
+function documentPageWithTracking(doc, children, siblings, movements) {
+    const pillarColors = {
+        MEMO: '#1a73e8', '810': '#137333', CNTR: '#c5221f',
+        LETR: '#b06000', RPT: '#8430ce', DOC: '#5f6368'
+    };
+    const color = pillarColors[doc.pillar_code] || '#5f6368';
+    
+    // Build children HTML
+    let childrenHtml = '';
+    if (children?.results?.length > 0) {
+        childrenHtml = `
+            <div class="section">
+                <h3>&#128196; Child Documents (${children.results.length})</h3>
+                <div class="doc-list">
+                    ${children.results.map(c => `
+                        <a href="/doc/${c.id}" class="doc-item">
+                            <span class="badge">${c.pillar_code}</span>
+                            <span class="title">${c.title}</span>
+                            <span class="rel-type">${c.relationship_type || ''}</span>
+                        </a>
+                    `).join('')}
+                </div>
+            </div>
+        `;
+    }
+    
+    // Build siblings HTML
+    let siblingsHtml = '';
+    if (siblings?.results?.length > 0) {
+        siblingsHtml = `
+            <div class="section">
+                <h3>&#128279; Related Documents (Same ANCHOR: ${doc.anchor})</h3>
+                <div class="doc-list">
+                    ${siblings.results.map(s => `
+                        <a href="/doc/${s.id}" class="doc-item">
+                            <span class="badge">${s.pillar_code}</span>
+                            <span class="title">${s.title}</span>
+                        </a>
+                    `).join('')}
+                </div>
+            </div>
+        `;
+    }
+    
+    // Build movement history HTML
+    let movementHtml = '';
+    if (movements?.results?.length > 0) {
+        movementHtml = `
+            <div class="section">
+                <h3>&#128506; Movement History</h3>
+                <div class="timeline">
+                    ${movements.results.map(m => `
+                        <div class="timeline-item">
+                            <div class="timeline-dot"></div>
+                            <div class="timeline-content">
+                                <div class="timeline-date">${m.moved_at}</div>
+                                <div class="timeline-action">${m.movement_type}</div>
+                                <div class="timeline-location">
+                                    ${m.from_location_name ? `${m.from_location_name} &#8594; ` : ''}${m.to_location_name}
+                                </div>
+                                ${m.moved_by ? `<div class="timeline-by">by ${m.moved_by}</div>` : ''}
+                                ${m.note ? `<div class="timeline-note">${m.note}</div>` : ''}
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
+            </div>
+        `;
+    }
+    
+    // Current location HTML
+    let locationHtml = '';
+    if (doc.location_path) {
+        locationHtml = `
+            <div class="location-banner">
+                &#128205; Current Location: <strong>${doc.location_path}</strong>
+            </div>
+        `;
+    }
+
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>${doc.title} - BeeBox</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f8f9fa; color: #202124; line-height: 1.6; }
+        .header { background: #fff; border-bottom: 1px solid #e8eaed; padding: 16px 24px; }
+        .header-content { max-width: 900px; margin: 0 auto; display: flex; align-items: center; gap: 12px; }
+        .brand { font-size: 18px; font-weight: 500; }
+        .container { max-width: 900px; margin: 0 auto; padding: 32px 24px; }
+        .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); overflow: hidden; margin-bottom: 24px; }
+        .card-header { padding: 24px; border-bottom: 1px solid #e8eaed; }
+        .doc-id { font-family: monospace; font-size: 13px; color: #1a73e8; background: #e8f0fe; padding: 4px 10px; border-radius: 4px; display: inline-block; margin-bottom: 12px; }
+        .doc-title { font-size: 24px; font-weight: 500; margin-bottom: 8px; }
+        .doc-meta { display: flex; gap: 16px; flex-wrap: wrap; color: #5f6368; font-size: 14px; }
+        .pillar-badge { display: inline-block; padding: 4px 12px; border-radius: 4px; font-size: 12px; font-weight: 600; background: ${color}22; color: ${color}; }
+        .card-body { padding: 24px; }
+        .verified { display: flex; align-items: center; gap: 8px; background: #e6f4ea; color: #137333; padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; font-size: 14px; }
+        .location-banner { background: #fff8e1; color: #b06000; padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; font-size: 14px; }
+        .info-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 24px; }
+        .info-item label { display: block; font-size: 12px; color: #5f6368; text-transform: uppercase; margin-bottom: 4px; }
+        .info-item value { display: block; font-size: 14px; }
+        .seal-box { font-family: monospace; background: #f1f3f4; padding: 4px 8px; border-radius: 4px; font-size: 13px; }
+        .section { margin-top: 24px; padding-top: 24px; border-top: 1px solid #e8eaed; }
+        .section h3 { font-size: 16px; font-weight: 500; margin-bottom: 16px; color: #202124; }
+        .doc-list { display: flex; flex-direction: column; gap: 8px; }
+        .doc-item { display: flex; align-items: center; gap: 12px; padding: 12px; background: #f8f9fa; border-radius: 8px; text-decoration: none; color: #202124; }
+        .doc-item:hover { background: #e8eaed; }
+        .doc-item .badge { padding: 4px 8px; background: #e8f0fe; color: #1a73e8; border-radius: 4px; font-size: 11px; font-weight: 600; }
+        .doc-item .title { flex: 1; font-size: 14px; }
+        .doc-item .rel-type { font-size: 12px; color: #9aa0a6; }
+        .timeline { position: relative; padding-left: 24px; }
+        .timeline::before { content: ''; position: absolute; left: 8px; top: 0; bottom: 0; width: 2px; background: #e8eaed; }
+        .timeline-item { position: relative; padding-bottom: 20px; }
+        .timeline-dot { position: absolute; left: -20px; top: 4px; width: 12px; height: 12px; background: #1a73e8; border-radius: 50%; }
+        .timeline-content { background: #f8f9fa; padding: 12px 16px; border-radius: 8px; }
+        .timeline-date { font-size: 12px; color: #9aa0a6; }
+        .timeline-action { font-size: 14px; font-weight: 500; color: #202124; }
+        .timeline-location { font-size: 13px; color: #5f6368; }
+        .timeline-by { font-size: 12px; color: #9aa0a6; }
+        .timeline-note { font-size: 12px; color: #5f6368; font-style: italic; margin-top: 4px; }
+        .parent-link { display: inline-flex; align-items: center; gap: 8px; padding: 8px 16px; background: #f1f3f4; border-radius: 8px; text-decoration: none; color: #1a73e8; font-size: 14px; margin-bottom: 16px; }
+        .parent-link:hover { background: #e8eaed; }
+        .footer { text-align: center; padding: 32px; color: #9aa0a6; font-size: 12px; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="header-content">
+            <span style="font-size:24px">&#128230;</span>
+            <span class="brand">BeeBox Digital Link</span>
+        </div>
+    </div>
+    <div class="container">
+        ${doc.parent_id ? `<a href="/doc/${doc.parent_id}" class="parent-link">&#8592; Parent: ${doc.relationship_type || 'Document'}</a>` : ''}
+        <div class="card">
+            <div class="card-header">
+                <div class="doc-id">${doc.id}</div>
+                <h1 class="doc-title">${doc.title}</h1>
+                <div class="doc-meta">
+                    <span class="pillar-badge">${doc.pillar_code} - ${doc.pillar_name}</span>
+                    <span>${doc.date_received}</span>
+                    <span>${doc.creator}</span>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="verified">&#10003; Document verified via SEAL: <span class="seal-box">${doc.seal}</span></div>
+                ${locationHtml}
+                <div class="info-grid">
+                    <div class="info-item"><label>SEAL</label><value><span class="seal-box">${doc.seal}</span></value></div>
+                    <div class="info-item"><label>ANCHOR</label><value><span class="seal-box">${doc.anchor}</span></value></div>
+                    <div class="info-item"><label>Origin</label><value>${doc.origin_display || doc.origin}</value></div>
+                    <div class="info-item"><label>Classification</label><value>${doc.classification_method}</value></div>
+                </div>
+                ${childrenHtml}
+                ${siblingsHtml}
+                ${movementHtml}
+            </div>
+        </div>
+        <div class="footer">BeeBox 202.5 - Document Trace &amp; Track - Pillar-Anchor-Seal Architecture</div>
+    </div>
+</body>
+</html>`;
+}
+
+function locationPage(location, contents, sublocations) {
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>${location.name} - BeeBox Location</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f8f9fa; color: #202124; line-height: 1.6; }
+        .header { background: #fff; border-bottom: 1px solid #e8eaed; padding: 16px 24px; }
+        .header-content { max-width: 900px; margin: 0 auto; display: flex; align-items: center; gap: 12px; }
+        .brand { font-size: 18px; font-weight: 500; }
+        .container { max-width: 900px; margin: 0 auto; padding: 32px 24px; }
+        .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); overflow: hidden; margin-bottom: 24px; }
+        .card-header { padding: 24px; border-bottom: 1px solid #e8eaed; background: #fff8e1; }
+        .loc-id { font-family: monospace; font-size: 13px; color: #b06000; background: #fff; padding: 4px 10px; border-radius: 4px; display: inline-block; margin-bottom: 12px; }
+        .loc-title { font-size: 24px; font-weight: 500; margin-bottom: 8px; }
+        .loc-path { color: #5f6368; font-size: 14px; }
+        .card-body { padding: 24px; }
+        .section { margin-bottom: 24px; }
+        .section h3 { font-size: 16px; font-weight: 500; margin-bottom: 16px; }
+        .sub-locations { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+        .sub-loc { display: flex; align-items: center; gap: 12px; padding: 16px; background: #f8f9fa; border-radius: 8px; text-decoration: none; color: #202124; }
+        .sub-loc:hover { background: #e8eaed; }
+        .sub-loc-icon { font-size: 24px; }
+        .sub-loc-name { font-size: 14px; font-weight: 500; }
+        .sub-loc-type { font-size: 12px; color: #9aa0a6; }
+        .doc-list { display: flex; flex-direction: column; gap: 8px; }
+        .doc-item { display: flex; align-items: center; gap: 12px; padding: 12px; background: #f8f9fa; border-radius: 8px; text-decoration: none; color: #202124; }
+        .doc-item:hover { background: #e8eaed; }
+        .doc-item .badge { padding: 4px 8px; background: #e8f0fe; color: #1a73e8; border-radius: 4px; font-size: 11px; font-weight: 600; }
+        .doc-item .title { flex: 1; font-size: 14px; }
+        .empty { text-align: center; padding: 32px; color: #9aa0a6; }
+        .footer { text-align: center; padding: 32px; color: #9aa0a6; font-size: 12px; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="header-content">
+            <span style="font-size:24px">&#128205;</span>
+            <span class="brand">BeeBox Location</span>
+        </div>
+    </div>
+    <div class="container">
+        <div class="card">
+            <div class="card-header">
+                <div class="loc-id">${location.id}</div>
+                <h1 class="loc-title">${location.name}</h1>
+                <div class="loc-path">${location.full_path}</div>
+            </div>
+            <div class="card-body">
+                ${sublocations?.results?.length > 0 ? `
+                    <div class="section">
+                        <h3>&#128193; Sub-Locations (${sublocations.results.length})</h3>
+                        <div class="sub-locations">
+                            ${sublocations.results.filter(l => l.id !== location.id).map(l => `
+                                <a href="/location/${l.id}" class="sub-loc">
+                                    <span class="sub-loc-icon">${l.location_type === 'room' ? '&#128682;' : l.location_type === 'cabinet' ? '&#128452;' : l.location_type === 'binder' ? '&#128210;' : '&#128193;'}</span>
+                                    <div>
+                                        <div class="sub-loc-name">${l.name}</div>
+                                        <div class="sub-loc-type">${l.location_type}</div>
+                                    </div>
+                                </a>
+                            `).join('')}
+                        </div>
+                    </div>
+                ` : ''}
+                
+                <div class="section">
+                    <h3>&#128196; Documents Here (${contents?.results?.length || 0})</h3>
+                    ${contents?.results?.length > 0 ? `
+                        <div class="doc-list">
+                            ${contents.results.map(d => `
+                                <a href="/doc/${d.id}" class="doc-item">
+                                    <span class="badge">${d.pillar_code}</span>
+                                    <span class="title">${d.title}</span>
+                                    <span class="seal-box">${d.seal}</span>
+                                </a>
+                            `).join('')}
+                        </div>
+                    ` : `<div class="empty">No documents at this location</div>`}
+                </div>
+            </div>
+        </div>
+        <div class="footer">BeeBox 202.5 - Location Tracking</div>
+    </div>
+</body>
+</html>`;
+}
+
+// ============================================================
+// API HANDLERS
+// ============================================================
+
+async function handleDocumentView(request, env, docId) {
+    const db = env.DB;
+    const doc = await getDocument(db, docId);
+    
+    if (!doc) {
+        return htmlResponse(`<h1>Document not found: ${docId}</h1>`, 404);
+    }
+    
+    // Get related data
+    const [children, siblings, movements] = await Promise.all([
+        getDocumentChildren(db, docId),
+        getDocumentSiblings(db, docId),
+        getDocumentMovements(db, docId)
+    ]);
+    
+    return htmlResponse(documentPageWithTracking(doc, children, siblings, movements));
+}
+
+async function handleLocationView(request, env, locationId) {
+    const db = env.DB;
+    const location = await getLocation(db, locationId);
+    
+    if (!location) {
+        return htmlResponse(`<h1>Location not found: ${locationId}</h1>`, 404);
+    }
+    
+    const [contents, sublocations] = await Promise.all([
+        getLocationContents(db, locationId),
+        getLocationTree(db, locationId)
+    ]);
+    
+    return htmlResponse(locationPage(location, contents, sublocations));
+}
+
+async function handleNfcScan(request, env) {
+    const db = env.DB;
+    const { nfc_tag_uid, document_id, action, moved_by, device } = await request.json();
+    
+    // Find location by NFC tag
+    const location = await getLocationByNfc(db, nfc_tag_uid);
+    
+    if (!location) {
+        return jsonResponse({ error: 'Unknown NFC tag', nfc_tag_uid }, 404);
+    }
+    
+    // If document_id provided, record movement
+    if (document_id) {
+        await recordMovement(db, {
+            document_id,
+            to_location_id: location.id,
+            movement_type: action || 'check_in',
+            moved_by,
+            scanned_nfc_tag: nfc_tag_uid,
+            scan_device: device
+        });
+        
+        return jsonResponse({
+            success: true,
+            location: location,
+            message: `Document ${document_id} moved to ${location.name}`
+        });
+    }
+    
+    // Just return location info
+    const contents = await getLocationContents(db, location.id);
+    return jsonResponse({ location, contents: contents.results });
+}
+
+// ============================================================
+// API - ADMIN ENDPOINTS
+// ============================================================
+
+async function handleAdminAPI(request, env, path) {
+    const apiKey = request.headers.get('X-API-Key');
+    if (apiKey !== env.ADMIN_API_KEY) {
+        return jsonResponse({ error: 'Unauthorized' }, 401);
+    }
+    
+    const db = env.DB;
+    const url = new URL(request.url);
+    
+    // --- DOCUMENT RELATIONSHIPS ---
+    
+    // POST /api/docs/:id/parent - Set parent document
+    if (request.method === 'POST' && path.match(/^\/api\/docs\/([^/]+)\/parent$/)) {
+        const docId = path.split('/')[3];
+        const { parent_id, relationship_type } = await request.json();
+        await setDocumentParent(db, docId, parent_id, relationship_type);
+        return jsonResponse({ success: true });
+    }
+    
+    // GET /api/docs/:id/tree - Get document tree
+    if (request.method === 'GET' && path.match(/^\/api\/docs\/([^/]+)\/tree$/)) {
+        const docId = path.split('/')[3];
+        const tree = await getDocumentTree(db, docId);
+        return jsonResponse(tree);
+    }
+    
+    // GET /api/docs/:id/children - Get children
+    if (request.method === 'GET' && path.match(/^\/api\/docs\/([^/]+)\/children$/)) {
+        const docId = path.split('/')[3];
+        const children = await getDocumentChildren(db, docId);
+        return jsonResponse(children);
+    }
+    
+    // --- LOCATIONS ---
+    
+    // GET /api/locations - List all locations
+    if (request.method === 'GET' && path === '/api/locations') {
+        const locations = await getLocationTree(db);
+        return jsonResponse(locations);
+    }
+    
+    // POST /api/locations - Create location
+    if (request.method === 'POST' && path === '/api/locations') {
+        const data = await request.json();
+        const id = await createLocation(db, data);
+        return jsonResponse({ success: true, id });
+    }
+    
+    // GET /api/locations/:id/contents - Get location contents
+    if (request.method === 'GET' && path.match(/^\/api\/locations\/([^/]+)\/contents$/)) {
+        const locationId = path.split('/')[3];
+        const includeSublocations = url.searchParams.get('recursive') === 'true';
+        const contents = await getLocationContents(db, locationId, includeSublocations);
+        return jsonResponse(contents);
+    }
+    
+    // --- MOVEMENTS ---
+    
+    // POST /api/movements - Record movement
+    if (request.method === 'POST' && path === '/api/movements') {
+        const data = await request.json();
+        await recordMovement(db, data);
+        return jsonResponse({ success: true });
+    }
+    
+    // GET /api/docs/:id/movements - Get movement history
+    if (request.method === 'GET' && path.match(/^\/api\/docs\/([^/]+)\/movements$/)) {
+        const docId = path.split('/')[3];
+        const movements = await getDocumentMovements(db, docId);
+        return jsonResponse(movements);
+    }
+    
+    // --- NFC ---
+    
+    // POST /api/nfc/scan - Handle NFC scan
+    if (request.method === 'POST' && path === '/api/nfc/scan') {
+        return handleNfcScan(request, env);
+    }
+    
+    return jsonResponse({ error: 'Not found' }, 404);
+}
+
+// ============================================================
+// MAIN ROUTER
+// ============================================================
+
+export default {
+    async fetch(request, env) {
+        const url = new URL(request.url);
+        const path = url.pathname;
+        
+        // Document view: GET /doc/:id
+        if (request.method === 'GET' && path.match(/^\/doc\/([^/]+)$/)) {
+            const docId = path.split('/')[2];
+            return handleDocumentView(request, env, docId);
+        }
+        
+        // Location view: GET /location/:id
+        if (request.method === 'GET' && path.match(/^\/location\/([^/]+)$/)) {
+            const locationId = path.split('/')[2];
+            return handleLocationView(request, env, locationId);
+        }
+        
+        // NFC scan endpoint (public)
+        if (request.method === 'POST' && path === '/nfc/scan') {
+            return handleNfcScan(request, env);
+        }
+        
+        // Admin API
+        if (path.startsWith('/api/')) {
+            return handleAdminAPI(request, env, path);
+        }
+        
+        // Home page
+        if (path === '/' || path === '') {
+            return htmlResponse(`<!DOCTYPE html>
+<html><head><title>BeeBox 202.5</title>
+<style>body{font-family:-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;background:#f8f9fa;margin:0}
+.card{text-align:center}.logo{font-size:64px;margin-bottom:16px}h1{font-size:24px;color:#202124;margin-bottom:8px}p{color:#5f6368}
+.version{background:#e8f0fe;color:#1a73e8;padding:4px 12px;border-radius:12px;font-size:12px;margin-top:16px;display:inline-block}</style>
+</head><body><div class="card"><div class="logo">&#128230;</div><h1>BeeBox Digital Link</h1><p>Document Trace &amp; Track</p><span class="version">v2.5 - Pillar-Anchor-Seal</span></div></body></html>`);
+        }
+        
+        return htmlResponse('Not Found', 404);
+    }
+};
